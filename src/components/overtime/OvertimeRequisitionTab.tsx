@@ -23,7 +23,6 @@ import {
   validateOvertimeRequisitionPayload,
   type RequisitionDecisionAction,
 } from '../../lib/overtimeRequisitionEngine.ts';
-import { DEFAULT_OVERTIME_PURPOSES } from '../../mock/payrollData.ts';
 import {
   AlertCircle,
   Calendar,
@@ -46,6 +45,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Tag,
+  Trash2,
   User,
   Users,
   X,
@@ -87,6 +87,7 @@ export const OvertimeRequisitionTab: React.FC = () => {
     payrollSettings,
     overtimeRequisitions,
     refreshOvertimeRequisitions,
+    clearOvertimeRequisitionsLocalData,
     createOvertimeRequisition,
     updateOvertimeRequisition,
     decideOvertimeRequisition,
@@ -99,12 +100,11 @@ export const OvertimeRequisitionTab: React.FC = () => {
     ? hasPageAction('overtime-management', 'approve_requisition')
     : currentUser.role === 'Super Admin';
 
-  // Master Overtime Purposes from Payroll Settings (never mutated by manual requisition purposes)
+  // Master Overtime Purposes from Payroll Settings (strictly live settings, no mock fallback)
   const activePayrollPurposes = useMemo(() => {
-    const raw =
-      payrollSettings?.overtimePurposes && payrollSettings.overtimePurposes.length > 0
-        ? payrollSettings.overtimePurposes
-        : DEFAULT_OVERTIME_PURPOSES;
+    const raw = Array.isArray(payrollSettings?.overtimePurposes)
+      ? payrollSettings.overtimePurposes
+      : [];
     return raw.filter((p) => p.isActive !== false);
   }, [payrollSettings?.overtimePurposes]);
 
@@ -112,8 +112,8 @@ export const OvertimeRequisitionTab: React.FC = () => {
   const [editingRequisition, setEditingRequisition] = useState<OvertimeRequisition | null>(null);
   const [isFormOpen, setIsFormOpen] = useState<boolean>(false);
   const [overtimeDate, setOvertimeDate] = useState<string>(() => getTodayIsoDate());
-  const [requiredWorkers, setRequiredWorkers] = useState<string>('5');
-  const [requestedHours, setRequestedHours] = useState<string>('2');
+  const [requiredWorkers, setRequiredWorkers] = useState<string>('');
+  const [requestedHours, setRequestedHours] = useState<string>('');
   const [selectedPurposes, setSelectedPurposes] = useState<OvertimeRequisitionPurposeItem[]>([]);
   const [isPurposeDropdownOpen, setIsPurposeDropdownOpen] = useState<boolean>(false);
   const [purposeSearch, setPurposeSearch] = useState<string>('');
@@ -136,9 +136,27 @@ export const OvertimeRequisitionTab: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
 
-  // Automatically fetch saved requisitions from Supabase whenever this page mounts or the active user changes
+  // Purge any local/session storage memory and fetch authoritative requisitions from Supabase on mount/user switch
   useEffect(() => {
+    if (typeof window !== 'undefined') {
+      for (const store of [localStorage, sessionStorage]) {
+        try {
+          for (let i = store.length - 1; i >= 0; i--) {
+            const key = store.key(i);
+            if (
+              key &&
+              (key.startsWith('ensec_overtime_requisition') ||
+                key.startsWith('ensec_granted_overtime_requisition'))
+            ) {
+              store.removeItem(key);
+            }
+          }
+        } catch {}
+      }
+    }
+
     if ((!canAccessRequisition && !canApproveRequisition) || !currentUser?.id || currentUser.id === 'guest') {
       return;
     }
@@ -317,8 +335,8 @@ export const OvertimeRequisitionTab: React.FC = () => {
   const resetForm = () => {
     setEditingRequisition(null);
     setOvertimeDate(getTodayIsoDate());
-    setRequiredWorkers('5');
-    setRequestedHours('2');
+    setRequiredWorkers('');
+    setRequestedHours('');
     setSelectedPurposes([]);
     setManualPurposeInput('');
     setEditingCustomPurposeId(null);
@@ -456,6 +474,34 @@ export const OvertimeRequisitionTab: React.FC = () => {
     }
   };
 
+  const handleClearLocalData = async () => {
+    setIsRefreshing(true);
+    setLoadError(null);
+    setSessionNotice(null);
+    resetForm();
+    setDateFrom('');
+    setDateTo('');
+    setOvertimeDateFilter('');
+    setStatusFilter('all');
+    setRequestedByFilter('all');
+    setSearchQuery('');
+    setActiveModalReqId(null);
+    setDecisionRemarks('');
+    setDecisionFeedback(null);
+    setFormFeedback(null);
+    try {
+      const res = await clearOvertimeRequisitionsLocalData();
+      if (res && !res.success && res.error) {
+        setLoadError(res.error);
+      } else {
+        setSessionNotice('Local session memory cleared. Loaded live records from Supabase.');
+        setTimeout(() => setSessionNotice(null), 5000);
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   return (
     <div className="space-y-4 text-xs">
       {/* Page Header Bar */}
@@ -471,7 +517,7 @@ export const OvertimeRequisitionTab: React.FC = () => {
           
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
           {canAccessRequisition && (
             <button
               type="button"
@@ -482,6 +528,7 @@ export const OvertimeRequisitionTab: React.FC = () => {
               <span>{isFormOpen ? 'Hide Request Form' : 'New Requisition'}</span>
             </button>
           )}
+          
           <button
             type="button"
             onClick={() => void handleRefresh()}
@@ -493,6 +540,22 @@ export const OvertimeRequisitionTab: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {sessionNotice && (
+        <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 flex items-center justify-between gap-2 text-xs">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            <span className="font-medium">{sessionNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setSessionNotice(null)}
+            className="p-0.5 rounded hover:bg-black/5 dark:hover:bg-white/10 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
       {/* Load Error Alert (shown only if Supabase fetch fails) */}
       {loadError && (

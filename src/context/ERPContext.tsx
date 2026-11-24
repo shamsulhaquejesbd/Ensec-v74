@@ -943,6 +943,7 @@ interface ERPContextType {
   overtimePolicies: OvertimePolicyConfig[];
   overtimeAuditLogs: OvertimeAuditTrail[];
   refreshOvertimeRequisitions: () => Promise<{ success: boolean; error?: string }>;
+  clearOvertimeRequisitionsLocalData: () => Promise<{ success: boolean; error?: string }>;
   createOvertimeRequisition: (payload: {
     overtimeDate: string;
     requiredWorkers: number;
@@ -1610,11 +1611,19 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setErpSessionToken(null);
     setIsAuthenticated(false);
     setCurrentUser(GUEST_USER);
+    setOvertimeRequisitions([]);
+    setGrantedOvertimeRequisitions([]);
     if (typeof window !== 'undefined') {
       localStorage.removeItem('ensec_erp_auth');
       localStorage.removeItem('ensec_erp_uid');
       localStorage.removeItem('ensec_erp_session_user');
       localStorage.removeItem('ensec_erp_session_token');
+      localStorage.removeItem('ensec_overtime_requisitions');
+      localStorage.removeItem('ensec_granted_overtime_requisitions');
+      localStorage.removeItem('ensec_overtime_requisitions_sample');
+      localStorage.removeItem('ensec_overtime_requisitions_cache');
+      localStorage.removeItem('ensec_overtime_requisition_draft');
+      localStorage.removeItem('ensec_overtime_requisition_filters');
       try {
         sessionStorage.clear();
       } catch {}
@@ -2556,7 +2565,37 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [overtimeRecords, setOvertimeRecords] = useState<OvertimeRecord[]>([]);
 
   // Complete Overtime Management Module States
-  const [overtimeRequisitions, setOvertimeRequisitions] = useState<OvertimeRequisition[]>([]);
+  const purgeOvertimeRequisitionLocalSessionMemory = () => {
+    if (typeof window === 'undefined') return;
+    const exactKeys = [
+      'ensec_overtime_requisitions',
+      'ensec_granted_overtime_requisitions',
+      'ensec_overtime_requisitions_sample',
+      'ensec_overtime_requisitions_cache',
+      'ensec_overtime_requisition_draft',
+      'ensec_overtime_requisition_filters',
+    ];
+    for (const store of [localStorage, sessionStorage]) {
+      try {
+        exactKeys.forEach((key) => store.removeItem(key));
+        for (let i = store.length - 1; i >= 0; i--) {
+          const key = store.key(i);
+          if (
+            key &&
+            (key.startsWith('ensec_overtime_requisition') ||
+              key.startsWith('ensec_granted_overtime_requisition'))
+          ) {
+            store.removeItem(key);
+          }
+        }
+      } catch {}
+    }
+  };
+
+  const [overtimeRequisitions, setOvertimeRequisitions] = useState<OvertimeRequisition[]>(() => {
+    purgeOvertimeRequisitionLocalSessionMemory();
+    return [];
+  });
   const [grantedOvertimeRequisitions, setGrantedOvertimeRequisitions] = useState<OvertimeRequisition[]>([]);
   const [overtimeRequests, setOvertimeRequests] = useState<OvertimeRequest[]>(() => {
     if (typeof window !== 'undefined') {
@@ -24257,6 +24296,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): Promise<Response> => {
     const initialResp = await fetch(url, {
       ...init,
+      cache: 'no-store',
       headers: getErpAuthHeaders(),
     });
     if (initialResp.status === 401 && currentUser?.id && currentUser.id !== 'guest') {
@@ -24264,6 +24304,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (freshToken) {
         return fetch(url, {
           ...init,
+          cache: 'no-store',
           headers: getErpAuthHeaders(freshToken),
         });
       }
@@ -24272,7 +24313,10 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const refreshOvertimeRequisitions = async (): Promise<{ success: boolean; error?: string }> => {
+    purgeOvertimeRequisitionLocalSessionMemory();
     if (!currentUser?.id || currentUser.id === 'guest') {
+      setOvertimeRequisitions([]);
+      setGrantedOvertimeRequisitions([]);
       return { success: false, error: 'User authentication is required to load overtime requisitions.' };
     }
     try {
@@ -24287,17 +24331,26 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const data = await mainResp.json().catch(() => ({}));
         if (Array.isArray(data?.requisitions)) {
           setOvertimeRequisitions(deduplicateOvertimeRequisitions(data.requisitions));
+        } else {
+          setOvertimeRequisitions([]);
         }
-      } else if (mainResp.status !== 403) {
-        const errData = await mainResp.json().catch(() => ({}));
-        mainError = errData?.error || `Failed to load overtime requisitions (HTTP ${mainResp.status}).`;
+      } else {
+        setOvertimeRequisitions([]);
+        if (mainResp.status !== 403) {
+          const errData = await mainResp.json().catch(() => ({}));
+          mainError = errData?.error || `Failed to load overtime requisitions (HTTP ${mainResp.status}).`;
+        }
       }
 
       if (grantedResp.ok) {
         const gData = await grantedResp.json().catch(() => ({}));
         if (Array.isArray(gData?.requisitions)) {
           setGrantedOvertimeRequisitions(deduplicateOvertimeRequisitions(gData.requisitions));
+        } else {
+          setGrantedOvertimeRequisitions([]);
         }
+      } else {
+        setGrantedOvertimeRequisitions([]);
       }
 
       if (mainError) {
@@ -24309,6 +24362,13 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Unable to refresh overtime requisitions:', err);
       return { success: false, error: msg };
     }
+  };
+
+  const clearOvertimeRequisitionsLocalData = async (): Promise<{ success: boolean; error?: string }> => {
+    purgeOvertimeRequisitionLocalSessionMemory();
+    setOvertimeRequisitions([]);
+    setGrantedOvertimeRequisitions([]);
+    return refreshOvertimeRequisitions();
   };
 
   const createOvertimeRequisition = async (payload: {
@@ -25103,6 +25163,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setOvertimeRecords([]);
     setOvertimeRequests([]);
+    setOvertimeRequisitions([]);
+    setGrantedOvertimeRequisitions([]);
     setOvertimeAttendances([]);
     setOvertimeAuditLogs([]);
 
@@ -25118,6 +25180,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           sessionStorage.removeItem('ensec_overtime_attendances');
           sessionStorage.removeItem('ensec_overtime_audit_logs');
         } catch {}
+        purgeOvertimeRequisitionLocalSessionMemory();
         localStorage.setItem('ensec_overtime_test_purged_v1', 'true');
       } catch (e) {
         console.warn('Error clearing overtime storage:', e);
@@ -26443,6 +26506,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         overtimePolicies,
         overtimeAuditLogs,
         refreshOvertimeRequisitions,
+        clearOvertimeRequisitionsLocalData,
         createOvertimeRequisition,
         updateOvertimeRequisition,
         decideOvertimeRequisition,

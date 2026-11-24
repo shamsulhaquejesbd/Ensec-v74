@@ -1443,7 +1443,6 @@ export function createAppServer() {
   const mfgRawMaterialsCache = new Map<string, any>();
   const mfgBatchesCache = new Map<string, any>();
   const overtimeRequestsCache = new Map<string, any>();
-  const overtimeRequisitionsCache = new Map<string, OvertimeRequisition>();
   const overtimeRequisitionLocks = new Map<string, Promise<void>>();
   const overtimeAttendancesCache = new Map<string, any>();
   const overtimePoliciesCache = new Map<string, any>();
@@ -3728,7 +3727,6 @@ export function createAppServer() {
       { data: reqRows, error: reqErr },
       { data: purposeRows },
       { data: histRows },
-      settingsRes,
     ] = await Promise.all([
       serverSupabase
         .from('overtime_requisitions')
@@ -3742,7 +3740,6 @@ export function createAppServer() {
         .from('overtime_requisition_approval_history')
         .select('*')
         .order('action_at', { ascending: false }),
-      loadRequisitionsFromSystemSettings(),
     ]);
 
     if (!reqErr && Array.isArray(reqRows)) {
@@ -3825,33 +3822,8 @@ export function createAppServer() {
         };
         mergedMap.set(id, mapped);
       }
-
-      // If any records were previously saved in Supabase system_settings before migration,
-      // preserve them and backfill them transparently into public.overtime_requisitions + child tables
-      if (!settingsRes.error && settingsRes.records.length > 0) {
-        const backfillTasks: Promise<unknown>[] = [];
-        for (const legacyRec of settingsRes.records) {
-          if (!mergedMap.has(legacyRec.id)) {
-            mergedMap.set(legacyRec.id, legacyRec);
-            backfillTasks.push(
-              insertSingleRequisitionIntoPrimaryTables(legacyRec, {
-                allowLegacyStatusBackfill: true,
-              }).then((res) => {
-                if (!res.ok && !res.missingTable) {
-                  console.warn(
-                    `[OvertimeRequisition] Legacy backfill warning for ${legacyRec.requisitionNumber}:`,
-                    res.error
-                  );
-                }
-              })
-            );
-          }
-        }
-        if (backfillTasks.length > 0) {
-          await Promise.allSettled(backfillTasks);
-        }
-      }
     } else if (isMissingSupabaseTableError(reqErr)) {
+      const settingsRes = await loadRequisitionsFromSystemSettings();
       if (settingsRes.error) {
         return {
           requisitions: [],
@@ -3874,12 +3846,6 @@ export function createAppServer() {
 
     const sorted = sortOvertimeRequisitionsDesc(Array.from(mergedMap.values()));
 
-    // Keep server cache strictly synchronized with Supabase (never retain unsaved memory-only records)
-    overtimeRequisitionsCache.clear();
-    for (const rec of sorted) {
-      overtimeRequisitionsCache.set(rec.id, rec);
-    }
-
     return {
       requisitions: sorted,
       primaryTableAvailable,
@@ -3888,6 +3854,7 @@ export function createAppServer() {
   };
 
   app.get('/api/overtime/requisitions', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     const caller = await resolveRequestUser(req);
     if (!caller) {
       return res.status(401).json({
@@ -4065,8 +4032,6 @@ export function createAppServer() {
         }
         persistedStorage = 'system_settings';
       }
-
-      overtimeRequisitionsCache.set(created.id, created);
 
       return res.status(201).json({
         allowed: true,
@@ -4290,8 +4255,6 @@ export function createAppServer() {
         persistedStorage = 'system_settings';
       }
 
-      overtimeRequisitionsCache.set(id, result.requisition);
-
       return res.status(200).json({
         allowed: true,
         success: true,
@@ -4467,8 +4430,6 @@ export function createAppServer() {
         }
         persistedStorage = 'system_settings';
       }
-
-      overtimeRequisitionsCache.set(id, result.requisition);
 
       return res.status(200).json({
         allowed: true,

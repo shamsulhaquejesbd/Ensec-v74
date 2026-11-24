@@ -4442,9 +4442,7 @@ export const PayrollModule: React.FC<PayrollModuleProps> = ({
               <h2 className="text-sm font-bold text-slate-900 dark:text-white">
                 Comprehensive Payroll Reports (13 Standard Formats)
               </h2>
-              <p className="text-xs text-slate-500">
-                Audited statements, tax withholding reports, bank transfer advice, and loan schedules.
-              </p>
+              
             </div>
             {canExportPayroll && (
               <button
